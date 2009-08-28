@@ -53,9 +53,9 @@ create_window(Wx) ->
 			[{pos, {0, 0}}, {size, {?WIDTH, ?HEIGHT}},
 			 {style, ?wxDEFAULT_FRAME_STYLE}]),
     
-    wxFrame:setIcon(Frame, wxIcon:new("wxwin.ico")),
+    %% wxFrame:setIcon(Frame, wxIcon:new("wxwin.ico")),
     Opts = [{size, {?WIDTH, ?HEIGHT}}],
-    GLAttrib = [{attribList, [?WX_GL_RGBA, ?WX_GL_DOUBLEBUFFER, ?WX_GL_DEPTH_SIZE, 16, 0]}],
+    GLAttrib = [{attribList, [?WX_GL_RGBA, ?WX_GL_DOUBLEBUFFER, ?WX_GL_DEPTH_SIZE, 24, 0]}],
     GL = wxGLCanvas:new(Frame, Opts ++ GLAttrib),
 
     wxFrame:connect(Frame, enter_window),
@@ -142,6 +142,7 @@ set_view(State) ->
 
     gl:depthFunc(?GL_LEQUAL),
     gl:enable(?GL_DEPTH_TEST),
+    gl:clearColor(1.0,0.0,0.0,1.0),
     gl:clearDepth(State#state.zmax),
 
     gl:matrixMode(?GL_PROJECTION),

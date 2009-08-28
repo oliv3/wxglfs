@@ -16,7 +16,7 @@
 %% API
 -export([start/1, stop/0]).
 -export([load_font/1, load_font/2,
-	 textSize/2, render/2, makeList/2]).
+	 textSize/2, height/1, render/2, makeList/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -63,6 +63,9 @@ stop() ->
 textSize(GLFont, String) ->
     gen_server:call(?SERVER, {textSize, GLFont, String}).
 
+height(GLFont) ->
+    gen_server:call(?SERVER, {height, GLFont}).
+
 %% format(GLFont, Format, Args) ->
 %%     gen_server:call(?SERVER, {format, GLFont, Format, Args}).
 
@@ -104,8 +107,8 @@ handle_call({load_font, Font, Options}, _From,
     case wxFont:ok(Font) of
 	true ->
 	    %% TODO SHOULD work with non-fixed fonts
-	    true = wxFont:isFixedWidth(Font),
-	    Glyphs = make_glyphs(Font),
+	    %%true = wxFont:isFixedWidth(Font),
+	    Glyphs = make_glyphs(Font, Options),
 	    Height = get_height(Font),
 	    
 	    F = #font{wx=Font, glyphs=Glyphs, height=Height},
@@ -121,6 +124,11 @@ handle_call({textSize, Fname,String}, _From, State=#state{fonts=Fs}) ->
     Font  = gb_trees:get(Fname, Fs),
     Reply = text_size(Font, String),
     {reply, Reply, State};
+
+
+handle_call({height, Fname}, _From, State=#state{fonts=Fs}) ->
+    #font{height=Height} = gb_trees:get(Fname, Fs), 
+    {reply, Height, State};
 
 handle_call({render, Fname, String}, _From, State=#state{fonts=Fs}) ->
     Font  = gb_trees:get(Fname, Fs),
@@ -177,14 +185,16 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-make_glyphs(Font) ->
-    make_glyphs(Font, 255, []).
+make_glyphs(Font, Options) ->
+    {From, To} = proplists:get_value(range, Options, {0, 255}),
+    From = erlang:min(From, To), %% Assert range
+    make_glyphs(Font, To, From, array:new()).
 
-make_glyphs(_Font, 0, Acc0) ->
-    list_to_tuple(Acc0);
-make_glyphs(Font, Char, Acc) ->
+make_glyphs(_Font, To, To, Arr) ->
+    Arr;
+make_glyphs(Font, Char, To, Acc) ->
     Glyph = make_glyph(Font, Char),
-    make_glyphs(Font, Char-1, [Glyph|Acc]).
+    make_glyphs(Font, Char-1, To, array:set(Char, Glyph, Acc)).
 
 make_glyph(_Font, Char) when Char < 32 ->
     undefined;
@@ -257,16 +267,21 @@ render_text(Font, String) ->
 render_text(_Font, [], _X) ->
     ok;
 render_text(Font, [H|Tail], X0) ->
-    Glyph = element(H, Font#font.glyphs),
-    GWidth = Glyph#glyph.w,
-    TexId = Glyph#glyph.tid,
+    case array:get(H, Font#font.glyphs) of
+	undefined when H =:= 9 -> %% TAB
+	    W = 12*8,
+	    render_text(Font, Tail, X0 + W);
+	undefined ->
+	    render_text(Font, Tail, X0);
+	Glyph -> 
+	    GWidth = Glyph#glyph.w,
+	    TexId = Glyph#glyph.tid,
 
-    X1 = X0 + GWidth,
-    Height = Font#font.height,
-    tex_quad(TexId, X0, X1, Height),
-    
-    render_text(Font, Tail, X1).
-
+	    X1 = X0 + GWidth,
+	    Height = Font#font.height,
+	    tex_quad(TexId, X0, X1, Height),
+	    render_text(Font, Tail, X1)
+    end.
 
 make_list(Font, String) ->
     List = gl:genLists(1),
@@ -278,7 +293,7 @@ make_list(Font, String) ->
 make_list(_Font, [], _X, Width) ->
     Width;
 make_list(Font, [H|Tail], X0, Width) ->
-    Glyph = element(H, Font#font.glyphs),
+    Glyph = array:get(H, Font#font.glyphs),
     GWidth = Glyph#glyph.w,
     TexId = Glyph#glyph.tid,
 
