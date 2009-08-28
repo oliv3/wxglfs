@@ -34,7 +34,7 @@ init() ->
     wxWindow:show(Frame),
 
     %% fs:start(wx:get_env(), GL),
-    wxGLFontServer:start(wx:get_env(), GL),
+    wx_glfont:start(GL),
 
     State = #state{frame=Frame, gl=GL},
     loop(State),
@@ -42,7 +42,7 @@ init() ->
 
 
 stop() ->
-    wxGLFontServer:stop(),
+    wx_glfont:stop(),
     %% fs:stop(),
     wx:destroy(),
     init:stop().

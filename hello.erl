@@ -1,6 +1,7 @@
 -module(hello).
 -author('olivier@biniou.info').
 
+-include_lib("wx/include/wx.hrl").
 -include_lib("wx/include/gl.hrl").
 
 -export([start/0, loop0/2]).
@@ -14,7 +15,7 @@
 
 start() ->
     {Env, GL} = gui:env(),
-    Pid = spawn(?MODULE, loop0, [Env, GL]),
+    Pid = spawn_link(?MODULE, loop0, [Env, GL]),
     register(?MODULE, Pid),
     gui:connect(Pid).
 
@@ -28,7 +29,9 @@ off() ->
 %% TODO delete list upon exit
 loop0(Env, GL) ->
     wx:set_env(Env),
-    List = wxGLFontServer:makeList("Hello world!"),
+    Font = wxFont:new(20, ?wxFONTFAMILY_TELETYPE, ?wxFONTSTYLE_NORMAL, ?wxFONTENCODING_ISO8859_15),
+    {ok, teletype_20} = wx_glfont:load_font(Font, [{name, teletype_20}]),
+    List = wx_glfont:makeList(teletype_20, "Hello world!"),
     State = #state{gl=GL, list=List},
     loop(State).
 
@@ -85,10 +88,10 @@ test1(State) ->
     gl:translatef(-1.0, -0.5, 0),
 
     String = "Erlang r0cks !",
-    Size = wxGLFontServer:textSize(String),
+    Size = wx_glfont:textSize(teletype_20, String),
     scale(Size),
     gl:color3ub(0, 255, 0),
-    wxGLFontServer:render(String).
+    wx_glfont:render(teletype_20, String).
 
 
 test2(State) ->
