@@ -73,7 +73,7 @@ hello(State) ->
     gl:enable(?GL_COLOR_MATERIAL),
 
     gl:disable(?GL_DEPTH_TEST),
-    gl:blendFunc(?GL_SRC_ALPHA, ?GL_ONE),
+    gl:blendFunc(?GL_SRC_ALPHA, ?GL_ONE_MINUS_SRC_ALPHA),
     gl:enable(?GL_BLEND),
     gl:enable(?GL_TEXTURE_2D),
 
@@ -116,7 +116,8 @@ scale({Width, Height}) ->
     gl:scalef(2.0/Width, 1.0/Height, 1.0).
     
 test3(#state{gl=GL, file=File, font20=Font}) ->
-    gl:color3ub(255, 255, 255),
+    %%gl:color3ub(255, 255, 255),
+    gl:color3ub(0, 0, 0),
     {W,H} = wxWindow:getSize(GL),
     gl:matrixMode(?GL_PROJECTION),
     gl:pushMatrix(),

@@ -51,7 +51,7 @@ load_font(WxFont, Options) ->
     end.
 
 text_size(#font{wx=Font}, String) ->
-    MDC = memory_dc(Font),
+    MDC  = memory_dc(Font),
     Size = wxDC:getTextExtent(MDC, String),
     wxMemoryDC:destroy(MDC),
     Size.
@@ -82,8 +82,8 @@ gen_glfont(Font, AW, H, Options) ->
     {TW,TH} = calc_tex_size(NoChars, AW, H), 
     From = erlang:min(From, To), %% Assert range    
     
-    {Bin, Glyphs} = make_glyphs(Font,From,To,TW,TH),
-    TexId = gen_texture(TW,TH,Bin,Options),
+    {Bin, HaveAlpha, Glyphs} = make_glyphs(Font,From,To,TW,TH),
+    TexId = gen_texture(TW,TH,Bin,HaveAlpha,Options),
     
     #font{wx=Font, tex=TexId, glyphs=Glyphs, height=H, ih=H/TH, iw=1/TW}.
 
@@ -93,20 +93,47 @@ make_glyphs(Font,From,To,TW,TH) ->
     ok = wxMemoryDC:selectObject(MDC, Bitmap),
 
     BG = {0, 0, 0, 0},
-    Brush = wxBrush:new(BG, [{style, ?wxSOLID}]),
+    Brush = wxBrush:new(BG, [{style, ?wxTRANSPARENT}]),
+    %% wxMemoryDC:clear(MDC),
     wxMemoryDC:setBackground(MDC, Brush),
-    wxMemoryDC:clear(MDC),
 
     FG = {255, 255, 255, 255},
-    wxMemoryDC:setTextForeground(MDC, FG),    
+    wxMemoryDC:setTextForeground(MDC, FG),
     Glyphs = make_glyphs(MDC, From, To, 0, 0, TW, TH, array:new()),
-    Image0 = wxBitmap:convertToImage(Bitmap),
-    debug(Image0),
-    %%Image1 = wxImage:rescale(Image0, ?TEXSIZE, ?TEXSIZE),
-    %%Image2  = wxImage:mirror(Image0, [{horizontally, false}]),    
-    BinData = wxImage:getData(Image0),
-    %% BinData = wxImage:getAlpha(Image2),
-    {BinData, Glyphs}.
+    Image = wxBitmap:convertToImage(Bitmap),
+    BinData = wxImage:getData(Image),
+    Alpha = case wxImage:hasAlpha(Image) of
+		true -> wxImage:getAlpha(Image);
+		false ->
+		    case wxImage:hasMask(Image) of
+			true ->
+			    wxImage:initAlpha(Image),
+			    wxImage:getAlpha(Image);
+			false ->
+			    wxImage:setMaskColour(Image, 0,0,0),
+			    wxImage:initAlpha(Image),
+			    wxImage:getAlpha(Image)
+		    end
+	    end,
+    %% debug(Image),  %% Remove the lines below if debug
+
+    wxBrush:destroy(Brush),
+    wxImage:destroy(Image),
+    wxBitmap:destroy(Bitmap),
+    wxMemoryDC:destroy(MDC),
+    greyscale(BinData, Alpha, Glyphs).
+
+%% Minimize texture space, use greyscale images
+%% greyscale(BinData, false, Glyphs) ->
+%%     Bin = << <<R:8>> || <<R:8,_:8,_:8>> <= BinData>>,
+%%     {Bin, false, Glyphs};
+greyscale(BinData, Alpha, Glyphs) ->
+    {greyscale2(BinData, Alpha, <<>>), true, Glyphs}.
+
+greyscale2(<<R:8,_:8,_:8, Cs/bytes>>, <<A:8, As/bytes>>, Acc) ->
+    greyscale2(Cs, As, <<Acc/bytes, R:8, A:8>>);
+greyscale2(<<>>, <<>>, Acc) ->
+    Acc.
 
 make_glyphs(DC, From, To, X, Y, TW, TH, Acc0)
   when From < To ->
@@ -131,23 +158,43 @@ make_glyph(DC, Char, X0, Y0,  TW, TH, Acc0) ->
     wxMemoryDC:drawText(DC, [Char], {X1, Y1}),
     G = #glyph{w=Width, u=X1/TW, v=(Y1)/TH},
     {array:set(Char, G, Acc0), X+1, Y}.
-    
 
-gen_texture(TW,TH,Bin,Options) ->
+gen_texture(TW,TH,Bin,HaveAlpha,Options) ->
     [TexId] = gl:genTextures(1),
-
     gl:bindTexture(?GL_TEXTURE_2D, TexId),
 
     %% gl:pixelStorei(?GL_UNPACK_ALIGNMENT, 1),
-    gl:texEnvf(?GL_TEXTURE_ENV, ?GL_TEXTURE_ENV_MODE, ?GL_MODULATE),
+    Mode = proplists:get_value(tex_mode, Options, ?GL_MODULATE),
+    gl:texEnvf(?GL_TEXTURE_ENV, ?GL_TEXTURE_ENV_MODE, Mode),
 
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_REPEAT),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_REPEAT),
+    MinF = proplists:get_value(tex_min, Options, ?GL_LINEAR),
+    gl:texParameterf(?GL_TEXTURE_2D,?GL_TEXTURE_MIN_FILTER,MinF),
+    MagF = proplists:get_value(tex_mag, Options, ?GL_LINEAR),
+    gl:texParameterf(?GL_TEXTURE_2D,?GL_TEXTURE_MAG_FILTER,MagF),
+    
+    WS = proplists:get_value(tex_wrap_s, Options, ?GL_CLAMP),
+    gl:texParameterf(?GL_TEXTURE_2D,?GL_TEXTURE_WRAP_S, WS),
+    WT = proplists:get_value(tex_wrap_t, Options, ?GL_CLAMP),
+    gl:texParameterf(?GL_TEXTURE_2D,?GL_TEXTURE_WRAP_T, WT),    
 
-    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGB, TW, TH,
-		  0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Bin),
+    GEN_MM = proplists:get_value(tex_gen_mipmap, Options, ?GL_FALSE),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_GENERATE_MIPMAP, GEN_MM),
+    if GEN_MM == ?GL_TRUE ->
+	    gl:generateMipmapEXT(?GL_TEXTURE_2D);
+       true -> ignore
+    end,
+    
+    %% io:format("HaveAlpha ~p ~n",[HaveAlpha]),
+    case HaveAlpha of
+	true ->
+	    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_LUMINANCE8_ALPHA8,
+			  TW, TH,  0, ?GL_LUMINANCE_ALPHA,
+			  ?GL_UNSIGNED_BYTE, Bin);
+	false ->
+	    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_LUMINANCE8,
+			  TW, TH,  0, ?GL_LUMINANCE,
+			  ?GL_UNSIGNED_BYTE, Bin)
+    end,
     gl:bindTexture(?GL_TEXTURE_2D, 0),
     TexId.
 
