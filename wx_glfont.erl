@@ -14,29 +14,16 @@
 -module(wx_glfont).
 
 %% API
--export([start/1, stop/0]).
 -export([load_font/1, load_font/2,
-	 textSize/2, height/1, render/2, makeList/2]).
+	 text_size/2, height/1, render/2, make_list/2]).
 
-%% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+-compile(export_all).
 
 -include_lib("wx/include/wx.hrl").
 -include_lib("wx/include/gl.hrl").
 
--behaviour(gen_server).
-
--define(SERVER, ?MODULE).
-
--define(ZERO, 0.0).
--define(ONE,  1.0).
-
--define(TEXSIZE, 32). %% TODO make this parametrable
-
--record(state, {gl, fonts, count=0}).
--record(glyph, {w, tid}).
--record(font,  {wx, glyphs, height}).
+-record(glyph, {u, v, w}).
+-record(font,  {wx, tex, glyphs, height, ih, iw}).
 
 %% TODO trap_exit to free textures on exit
 
@@ -47,186 +34,104 @@
 %% Function: start_link() -> {ok,Pid} | ignore | {error,Error}
 %% Description: Starts the server
 %%--------------------------------------------------------------------
-start(GLContext) ->
-    Env = wx:get_env(),
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [Env, GLContext], []).
 
 load_font(WxFont) ->
     load_font(WxFont, []).
 
 load_font(WxFont, Options) ->
-    gen_server:call(?SERVER, {load_font, WxFont, Options}).
+    case wxFont:ok(WxFont) of
+	true ->
+	    {Height, AWidth} = get_height(WxFont), 
+	    GLFont = gen_glfont(WxFont, AWidth, Height, Options),
+	    {ok, GLFont};
+	false ->
+	    {error, not_ok}
+    end.
 
-stop() ->
-    gen_server:cast(?SERVER, stop).
+text_size(#font{wx=Font}, String) ->
+    MDC = memory_dc(Font),
+    Size = wxDC:getTextExtent(MDC, String),
+    wxMemoryDC:destroy(MDC),
+    Size.
 
-textSize(GLFont, String) ->
-    gen_server:call(?SERVER, {textSize, GLFont, String}).
-
-height(GLFont) ->
-    gen_server:call(?SERVER, {height, GLFont}).
+height(#font{height=Height}) ->
+    Height.
 
 %% format(GLFont, Format, Args) ->
 %%     gen_server:call(?SERVER, {format, GLFont, Format, Args}).
 
 %% Remove the ones below, keep above
-render(GLFont, String) ->
-    gen_server:call(?SERVER, {render, GLFont, String}).
+render(#font{} = GLFont, String) ->
+    render_text(GLFont, String).
 
-makeList(GLFont, String) ->
-    gen_server:call(?SERVER, {makeList, GLFont, String}).
-
-%%====================================================================
-%% gen_server callbacks
-%%====================================================================
-
-%%--------------------------------------------------------------------
-%% Function: init(Args) -> {ok, State} |
-%%                         {ok, State, Timeout} |
-%%                         ignore               |
-%%                         {stop, Reason}
-%% Description: Initiates the server
-%%--------------------------------------------------------------------
-init([Env, Context]) ->
-    wx:set_env(Env),
-    wxGLCanvas:setCurrent(Context),   
-    {ok, #state{gl=Context, fonts=gb_trees:empty()}}.
-
-%%--------------------------------------------------------------------
-%% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
-%%                                      {reply, Reply, State, Timeout} |
-%%                                      {noreply, State} |
-%%                                      {noreply, State, Timeout} |
-%%                                      {stop, Reason, Reply, State} |
-%%                                      {stop, Reason, State}
-%% Description: Handling call messages
-%%--------------------------------------------------------------------
-
-handle_call({load_font, Font, Options}, _From,
-	    State = #state{fonts=Fs0, count=N}) ->
-    case wxFont:ok(Font) of
-	true ->
-	    %% TODO SHOULD work with non-fixed fonts
-	    %%true = wxFont:isFixedWidth(Font),
-	    Glyphs = make_glyphs(Font, Options),
-	    Height = get_height(Font),
-	    
-	    F = #font{wx=Font, glyphs=Glyphs, height=Height},
-	    Count = N+1,
-	    Name = proplists:get_value(name, Options, Count),
-	    Fs = gb_trees:insert(Name, F, Fs0), 
-	    {reply, {ok, Name}, State#state{fonts=Fs, count=Count}};
-	false ->
-	    {error, not_ok}
-    end;
-
-handle_call({textSize, Fname,String}, _From, State=#state{fonts=Fs}) ->
-    Font  = gb_trees:get(Fname, Fs),
-    Reply = text_size(Font, String),
-    {reply, Reply, State};
-
-
-handle_call({height, Fname}, _From, State=#state{fonts=Fs}) ->
-    #font{height=Height} = gb_trees:get(Fname, Fs), 
-    {reply, Height, State};
-
-handle_call({render, Fname, String}, _From, State=#state{fonts=Fs}) ->
-    Font  = gb_trees:get(Fname, Fs),
-    Reply = render_text(Font, String),
-    {reply, Reply, State};
-
-handle_call({makeList, Fname, String}, _From, State=#state{fonts=Fs}) ->
-    Font  = gb_trees:get(Fname, Fs),
-    Reply = make_list(Font, String),
-    {reply, Reply, State};
-
-handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
-
-%%--------------------------------------------------------------------
-%% Function: handle_cast(Msg, State) -> {noreply, State} |
-%%                                      {noreply, State, Timeout} |
-%%                                      {stop, Reason, State}
-%% Description: Handling cast messages
-%%--------------------------------------------------------------------
-handle_cast(stop, State) ->
-    {stop, normal, State};
-
-handle_cast(_Msg, State) ->
-    {noreply, State}.
-
-%%--------------------------------------------------------------------
-%% Function: handle_info(Info, State) -> {noreply, State} |
-%%                                       {noreply, State, Timeout} |
-%%                                       {stop, Reason, State}
-%% Description: Handling all non call/cast messages
-%%--------------------------------------------------------------------
-handle_info(_Info, State) ->
-    {noreply, State}.
-
-%%--------------------------------------------------------------------
-%% Function: terminate(Reason, State) -> void()
-%% Description: This function is called by a gen_server when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any necessary
-%% cleaning up. When it returns, the gen_server terminates with Reason.
-%% The return value is ignored.
-%%--------------------------------------------------------------------
-terminate(_Reason, _State) ->
-    ok.
-
-%%--------------------------------------------------------------------
-%% Func: code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% Description: Convert process state when code is changed
-%%--------------------------------------------------------------------
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+make_list(#font{} = Font, String) ->
+    List = gl:genLists(1),
+    gl:newList(List, ?GL_COMPILE),
+    Res = render_text2(Font, String),
+    gl:endList(),
+    {Res, List}.    
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-make_glyphs(Font, Options) ->
-    {From, To} = proplists:get_value(range, Options, {0, 255}),
-    From = erlang:min(From, To), %% Assert range
-    make_glyphs(Font, To, From, array:new()).
+gen_glfont(Font, AW, H, Options) ->
+    {From, To} = proplists:get_value(range, Options, {32, 256}),
+    NoChars = To - From,
+    {TW,TH} = calc_tex_size(NoChars, AW, H), 
+    From = erlang:min(From, To), %% Assert range    
+    
+    {Bin, Glyphs} = make_glyphs(Font,From,To,TW,TH),
+    TexId = gen_texture(TW,TH,Bin,Options),
+    
+    #font{wx=Font, tex=TexId, glyphs=Glyphs, height=H, ih=H/TH, iw=1/TW}.
 
-make_glyphs(_Font, To, To, Arr) ->
-    Arr;
-make_glyphs(Font, Char, To, Acc) ->
-    Glyph = make_glyph(Font, Char),
-    make_glyphs(Font, Char-1, To, array:set(Char, Glyph, Acc)).
-
-make_glyph(_Font, Char) when Char < 32 ->
-    undefined;
-make_glyph(Font, Char) ->
-    %% FIXME leaks here ? what should we destroy/1 ?
-
+make_glyphs(Font,From,To,TW,TH) ->
     MDC = memory_dc(Font),
-    {Width, Height} = wxDC:getTextExtent(MDC, [Char]),
-
-    Bitmap = wxBitmap:new(Width, Height),
+    Bitmap = wxBitmap:new(TW, TH),
     ok = wxMemoryDC:selectObject(MDC, Bitmap),
 
-    BG = {0, 0, 0},
+    BG = {0, 0, 0, 0},
     Brush = wxBrush:new(BG, [{style, ?wxSOLID}]),
     wxMemoryDC:setBackground(MDC, Brush),
     wxMemoryDC:clear(MDC),
 
-    FG = {255, 255, 255},
-    wxMemoryDC:setTextForeground(MDC, FG),
-    wxMemoryDC:drawText(MDC, [Char], {0, 0}),
-
+    FG = {255, 255, 255, 255},
+    wxMemoryDC:setTextForeground(MDC, FG),    
+    Glyphs = make_glyphs(MDC, From, To, 0, 0, TW, TH, array:new()),
     Image0 = wxBitmap:convertToImage(Bitmap),
-    Image1 = wxImage:rescale(Image0, ?TEXSIZE, ?TEXSIZE),
-    Image2 = wxImage:mirror(Image1, [{horizontally, false}]),
+    debug(Image0),
+    %%Image1 = wxImage:rescale(Image0, ?TEXSIZE, ?TEXSIZE),
+    %%Image2  = wxImage:mirror(Image0, [{horizontally, false}]),    
+    BinData = wxImage:getData(Image0),
+    %% BinData = wxImage:getAlpha(Image2),
+    {BinData, Glyphs}.
 
-    BinData = wxImage:getData(Image2),
+make_glyphs(DC, From, To, X, Y, TW, TH, Acc0)
+  when From < To ->
+    {Acc,Xp,Yp} = make_glyph(DC, From, X, Y, TW, TH, Acc0),
+    make_glyphs(DC, From+1, To, Xp, Yp, TW, TH, Acc);
+make_glyphs(_DC, _From, _To, _X, _Y, _TW, _TH, Acc) ->
+    Acc.
 
-    make_glyph2(BinData, Width).
+make_glyph(DC, Char, X0, Y0,  TW, TH, Acc0) ->
+    {Width, Height} = wxDC:getTextExtent(DC, [Char]),
+    Xt = X0+Width,
+    true = (Y0 + Height) =< TH, %% Assert that we fit inside texture
 
-make_glyph2(null, _W) ->
-    undefined;
-make_glyph2(Data, Width) ->
+    case Xt > TW of
+	true -> 
+	    X = Width,  Y = Y0+Height,
+	    X1 = 0, Y1 = Y;
+	false ->
+	    X = Xt,  Y = Y0,
+	    X1 = X0, Y1 = Y0	     
+    end,
+    wxMemoryDC:drawText(DC, [Char], {X1, Y1}),
+    G = #glyph{w=Width, u=X1/TW, v=(Y1)/TH},
+    {array:set(Char, G, Acc0), X+1, Y}.
+    
+
+gen_texture(TW,TH,Bin,Options) ->
     [TexId] = gl:genTextures(1),
 
     gl:bindTexture(?GL_TEXTURE_2D, TexId),
@@ -239,82 +144,122 @@ make_glyph2(Data, Width) ->
     gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_REPEAT),
     gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_REPEAT),
 
-    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGB, ?TEXSIZE, ?TEXSIZE,
-		  0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Data),
-
-    #glyph{w=Width, tid=TexId}.
+    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGB, TW, TH,
+		  0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Bin),
+    gl:bindTexture(?GL_TEXTURE_2D, 0),
+    TexId.
 
 get_height(Font) ->
     MDC = memory_dc(Font),
     Height = wxMemoryDC:getCharHeight(MDC),
+    AverW  = wxMemoryDC:getCharWidth(MDC),
     wxMemoryDC:destroy(MDC),
-    Height.
+    {Height, AverW}.
 
 memory_dc(Font) ->
     MDC = wxMemoryDC:new(),
     wxMemoryDC:setFont(MDC, Font),
     MDC.
 
-text_size(#font{wx=Font}, String) ->
-    MDC = memory_dc(Font),
-    Size = wxDC:getTextExtent(MDC, String),
-    wxMemoryDC:destroy(MDC),
-    Size.
-
 render_text(Font, String) ->
-    render_text(Font, String, 0.0).
+    render_text2(Font, String),
+    ok.
 
-render_text(_Font, [], _X) ->
-    ok;
-render_text(Font, [H|Tail], X0) ->
-    case array:get(H, Font#font.glyphs) of
-	undefined when H =:= 9 -> %% TAB
-	    W = 12*8,
-	    render_text(Font, Tail, X0 + W);
-	undefined ->
-	    render_text(Font, Tail, X0);
-	Glyph -> 
-	    GWidth = Glyph#glyph.w,
-	    TexId = Glyph#glyph.tid,
-
-	    X1 = X0 + GWidth,
-	    Height = Font#font.height,
-	    tex_quad(TexId, X0, X1, Height),
-	    render_text(Font, Tail, X1)
+render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
+    gl:bindTexture(?GL_TEXTURE_2D, TexId),
+    gl:'begin'(?GL_QUADS),       
+    Res = render_text3(String, Gs, IH, IW, H, 0),
+    gl:'end'(),
+    %% gl:bindTexture(?GL_TEXTURE_2D, 0),
+    Res.
+    
+render_text3([], _Gs, _IH, _IW, H, W) ->
+    {W,H};
+render_text3([Char|String], Gs, IH, IW, H, X0) ->
+    case array:get(Char, Gs) of
+	undefined when Char =:= 9 -> %% TAB
+	    Space = array:get(32, Gs),
+	    X = lists:foldl(fun(_, X) ->
+				    render_glyph(Space,X,H,IW,IH)
+			    end, X0, "        "),
+	    render_text3(String, Gs, IH, IW, H, X);
+	undefined -> %% Should we render something strange here
+	    render_text3(String, Gs, IH, IW, H, X0);
+	Glyph ->
+	    %%io:format("~s ~p~n",[[Char], Glyph]),
+	    X = render_glyph(Glyph,X0,H,IW,IH), 
+	    render_text3(String, Gs, IH, IW, H, X)
     end.
 
-make_list(Font, String) ->
-    List = gl:genLists(1),
-    gl:newList(List, ?GL_COMPILE),
-    Width = make_list(Font, String, 0.0, 0),
-    gl:endList(),
-    {{Width, Font#font.height}, List}.
+render_glyph(#glyph{u=U,v=V,w=W},X0,H,IW,IH) -> 
+    X1 = X0 + W,
+    UD = U + (W-1)*IW,
+    VD = V + IH,
+    gl:texCoord2f(U,  VD),  gl:vertex2i(X0, 0),
+    gl:texCoord2f(UD, VD),  gl:vertex2i(X1, 0),
+    gl:texCoord2f(UD, V), gl:vertex2i(X1, H),
+    gl:texCoord2f(U,  V), gl:vertex2i(X0, H),
+    X1.
 
-make_list(_Font, [], _X, Width) ->
-    Width;
-make_list(Font, [H|Tail], X0, Width) ->
-    Glyph = array:get(H, Font#font.glyphs),
-    GWidth = Glyph#glyph.w,
-    TexId = Glyph#glyph.tid,
+calc_tex_size(No, CW, CH) ->
+    %% Add some extra chars to be sure it fits.
+    calc_tex_size(No+5, 1, No+5, CW, CH, {undefined, undefined}, undefined).
 
-    X1 = X0 + GWidth,
-    Height = Font#font.height,
-    tex_quad(TexId, X0, X1, Height),
+calc_tex_size(X, Y, No, CW, CH, Prev = {BestArea,Dec}, BestCoord)
+  when Y =< No ->
+    Xp = tsize(X*CW),
+    Yp = tsize(Y*CH),
+    Area = Xp * Yp,
+    Square = abs(Xp - Yp),
+    NextX = ((No-1) div (Y+1)) + 1,
+    if Area < BestArea ->
+	    %%io:format("Best is ~p ~p ~p ~n", [Area, Xp,Yp]),
+	    calc_tex_size(NextX, Y+1, No, CW, CH, {Area,Square}, {Xp,Yp});
+       Area == BestArea, Square < Dec ->
+	    %%io:format("Best is ~p ~p ~p ~n", [Area, Xp,Yp]),
+	    calc_tex_size(NextX, Y+1, No, CW, CH, {Area,Square}, {Xp,Yp});
+       true ->
+	    calc_tex_size(NextX, Y+1, No, CW, CH, Prev, BestCoord)
+    end;
+calc_tex_size(_, _, _, _, _, _, BestCoord) ->
+    BestCoord.
+    
 
-    NewWidth = Width + GWidth,
+floor(T,N) ->
+    X = T div N,
+    if (T rem N) =:= 0 ->
+	    X;
+       true -> 
+	    X+1
+    end.
 
-    make_list(Font, Tail, X1, NewWidth).
+tsize(X0) ->
+    Pow = trunc(log2(X0)),
+    case (1 bsl Pow) of
+	X0 -> X0;
+	_ -> 1 bsl (Pow+1)
+    end.
+  
+log2(X) ->
+    math:log(X) / math:log(2).
+    
+
+check_pow2(NoX, W, Pow2) when NoX * W > Pow2 ->
+    check_pow2(NoX, W, Pow2*2);
+check_pow2(NoX, W, Pow2) ->
+    {trunc((Pow2 - NoX*W)/W), Pow2}.
 
 
-tex_quad(TexId, X0, X1, H) ->
-    gl:bindTexture(?GL_TEXTURE_2D, TexId),
-    gl:'begin'(?GL_QUADS),
-    gl:texCoord2f(?ZERO, ?ZERO), gl:vertex3f(X0, ?ZERO, ?ZERO),
-    gl:texCoord2f(?ONE,  ?ZERO), gl:vertex3f(X1, ?ZERO, ?ZERO),
-    gl:texCoord2f(?ONE,  ?ONE ), gl:vertex3f(X1,     H, ?ZERO),
-    gl:texCoord2f(?ZERO, ?ONE ), gl:vertex3f(X0,     H, ?ZERO),
-    gl:'end'().
-
-
-
-
+debug(Image) ->
+    Frame = wxFrame:new(wx:null(), ?wxID_ANY, "DEBUG",
+			[{size, {600, 600}}]),
+    Panel = wxPanel:new(Frame),
+    Paint = fun(_,_) ->	    
+		    DC=wxPaintDC:new(Panel),
+		    Bmp = wxBitmap:new(Image),
+		    wxDC:drawBitmap(DC, Bmp, {0,0}),
+		    wxPaintDC:destroy(DC),
+		    wxBitmap:destroy(Bmp)
+	    end,
+    wxFrame:connect(Panel, paint, [{callback, Paint}]),
+    wxFrame:show(Frame).
