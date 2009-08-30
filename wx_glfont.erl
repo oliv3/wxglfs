@@ -25,6 +25,8 @@
 -record(glyph, {u, v, w}).
 -record(font,  {wx, tex, glyphs, height, ih, iw}).
 
+-define(F32, 32/float-native).
+
 %% TODO trap_exit to free textures on exit
 
 %%====================================================================
@@ -166,40 +168,61 @@ render_text(Font, String) ->
     ok.
 
 render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
-    gl:bindTexture(?GL_TEXTURE_2D, TexId),
-    gl:'begin'(?GL_QUADS),       
-    Res = render_text3(String, Gs, IH, IW, H, 0),
-    gl:'end'(),
-    %% gl:bindTexture(?GL_TEXTURE_2D, 0),
-    Res.
+    {Size, Bin} = render_text3(String, Gs, IH, IW, H, {0, <<>>}),
+    case Bin of
+	<<>> -> ok;	
+	<<_:2/unit:32, TxBin/bytes>> ->
+	    gl:bindTexture(?GL_TEXTURE_2D, TexId),
+	    gl:vertexPointer(2, ?GL_FLOAT, 16, Bin),
+	    gl:texCoordPointer(2, ?GL_FLOAT, 16, TxBin),
+	    gl:enableClientState(?GL_VERTEX_ARRAY),
+	    gl:enableClientState(?GL_TEXTURE_COORD_ARRAY),
+	    gl:drawArrays(?GL_QUADS, 0, byte_size(Bin) div 16),
+	    gl:disableClientState(?GL_VERTEX_ARRAY),
+	    gl:disableClientState(?GL_TEXTURE_COORD_ARRAY)
+    end,
+    Size.
     
-render_text3([], _Gs, _IH, _IW, H, W) ->
-    {W,H};
-render_text3([Char|String], Gs, IH, IW, H, X0) ->
+render_text3([], _Gs, _IH, _IW, H, {W, Bin}) ->
+    {{W,H},Bin};
+render_text3([Char|String], Gs, IH, IW, H, Data0) ->
     case array:get(Char, Gs) of
 	undefined when Char =:= 9 -> %% TAB
 	    Space = array:get(32, Gs),
-	    X = lists:foldl(fun(_, X) ->
-				    render_glyph(Space,X,H,IW,IH)
-			    end, X0, "        "),
-	    render_text3(String, Gs, IH, IW, H, X);
+	    Data = lists:foldl(fun(_, Data) ->
+				       render_glyph(Space,H,IW,IH,Data)
+			       end, Data0, "        "),
+	    render_text3(String, Gs, IH, IW, H, Data);
 	undefined -> %% Should we render something strange here
-	    render_text3(String, Gs, IH, IW, H, X0);
+	    render_text3(String, Gs, IH, IW, H, Data0);
 	Glyph ->
 	    %%io:format("~s ~p~n",[[Char], Glyph]),
-	    X = render_glyph(Glyph,X0,H,IW,IH), 
-	    render_text3(String, Gs, IH, IW, H, X)
+	    Data = render_glyph(Glyph,H,IW,IH,Data0), 
+	    render_text3(String, Gs, IH, IW, H, Data)
     end.
 
-render_glyph(#glyph{u=U,v=V,w=W},X0,H,IW,IH) -> 
+render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Bin}) -> 
     X1 = X0 + W,
     UD = U + (W-1)*IW,
     VD = V + IH,
-    gl:texCoord2f(U,  VD),  gl:vertex2i(X0, 0),
-    gl:texCoord2f(UD, VD),  gl:vertex2i(X1, 0),
-    gl:texCoord2f(UD, V), gl:vertex2i(X1, H),
-    gl:texCoord2f(U,  V), gl:vertex2i(X0, H),
-    X1.
+    {X1,
+     <<Bin/binary,         %% wxImage: 0,0 is upper left turn each 
+      X0:?F32,0:?F32, U:?F32, VD:?F32, % Vertex lower left, UV-coord up-left
+      X1:?F32,0:?F32, UD:?F32,VD:?F32, % Vertex lower right,UV-coord up-right
+      X1:?F32,H:?F32, UD:?F32, V:?F32, % Vertex upper right,UV-coord down-right
+      X0:?F32,H:?F32, U:?F32,  V:?F32  % Vertex upper left, UV-coord down-left
+      >>
+    }.
+
+%% render_glyph(#glyph{u=U,v=V,w=W},X0,H,IW,IH) -> 
+%%     X1 = X0 + W,
+%%     UD = U + (W-1)*IW,
+%%     VD = V + IH,
+%%     gl:texCoord2f(U,  VD),  gl:vertex2i(X0, 0),
+%%     gl:texCoord2f(UD, VD),  gl:vertex2i(X1, 0),
+%%     gl:texCoord2f(UD, V), gl:vertex2i(X1, H),
+%%     gl:texCoord2f(U,  V), gl:vertex2i(X0, H),
+%%     X1.
 
 calc_tex_size(No, CW, CH) ->
     %% Add some extra chars to be sure it fits.

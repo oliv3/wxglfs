@@ -10,7 +10,7 @@
 -define(ZERO, 0.0).
 -define(ONE,  1.0).
 
--record(state, {enabled=true, gl, rot=0, list, file}).
+-record(state, {enabled=true, gl, rot=0, list, file, font20}).
 
 
 start() ->
@@ -29,12 +29,18 @@ off() ->
 %% TODO delete list upon exit
 loop0(Env, GL) ->
     wx:set_env(Env),
-    Font = wxFont:new(20, ?wxFONTFAMILY_SWISS, ?wxFONTSTYLE_NORMAL, ?wxFONTENCODING_ISO8859_15),
-    {ok, teletype_20} = wx_glfont:load_font(Font, [{name, teletype_20}]),
-    List = wx_glfont:makeList(teletype_20, "Hello world!"),
+    wxGLCanvas:setCurrent(GL),
+    Ver = gl:getString(?GL_VERSION),
+    Ven = gl:getString(?GL_VENDOR), 
+    io:format("GL: ~s ~s~n", [Ven, Ver]),
+
+    Font = wxFont:new(20, ?wxFONTFAMILY_SWISS, ?wxFONTSTYLE_NORMAL,
+		      ?wxFONTENCODING_ISO8859_15),
+    {ok, GLFont} = wx_glfont:load_font(Font, [{name, teletype_20}]),
+    List = wx_glfont:make_list(GLFont, "Hello world!"),
     {ok, File0} = file:read_file(?MODULE_STRING ++ ".erl"),
     File = re:split(File0, "\r?\n", [{return, list}]),
-    State = #state{gl=GL, list=List, file=File},
+    State = #state{gl=GL, list=List, file=File, font20=GLFont},
     loop(State).
 
 loop(State) ->
@@ -58,12 +64,10 @@ draw(State) ->
 	false ->
 	    ok;
 	true ->
-	    hello(State)
+	    wx:batch(fun() -> hello(State) end)
     end.
 
 hello(State) ->
-    wxGLCanvas:setCurrent(State#state.gl),
-
     gl:enable(?GL_LIGHT0),
     gl:enable(?GL_LIGHTING),
     gl:enable(?GL_COLOR_MATERIAL),
@@ -76,7 +80,6 @@ hello(State) ->
     test1(State),
 
     gl:disable(?GL_LIGHTING),
-
     test2(State),
 
     test3(State),
@@ -86,17 +89,16 @@ hello(State) ->
     gl:disable(?GL_BLEND).
 
 
-test1(State) ->
+test1(State = #state{font20=Font}) ->
     u:set_model_view(),
     gl:rotatef(State#state.rot, 1, 0, 0),
     gl:translatef(-1.0, -0.5, 0),
 
     String = "Erlang r0cks !",
-    Size = wx_glfont:textSize(teletype_20, String),
+    Size = wx_glfont:text_size(Font, String),
     scale(Size),
     gl:color3ub(0, 255, 0),
-    wx_glfont:render(teletype_20, String).
-
+    wx_glfont:render(Font, String).
 
 test2(State) ->
     u:set_model_view(),
@@ -113,7 +115,7 @@ test2(State) ->
 scale({Width, Height}) ->
     gl:scalef(2.0/Width, 1.0/Height, 1.0).
     
-test3(#state{gl=GL, file=File}) ->
+test3(#state{gl=GL, file=File, font20=Font}) ->
     gl:color3ub(255, 255, 255),
     {W,H} = wxWindow:getSize(GL),
     gl:matrixMode(?GL_PROJECTION),
@@ -123,12 +125,12 @@ test3(#state{gl=GL, file=File}) ->
     gl:matrixMode(?GL_MODELVIEW),
     gl:pushMatrix(),
     gl:loadIdentity(),
-    TextH = float(wx_glfont:height(teletype_20)),
+    TextH = float(wx_glfont:height(Font)),
     gl:translatef(30.0, H-30.0-TextH, 0.0),
-    wx_glfont:render(teletype_20, "This is teletype_20"),
+    wx_glfont:render(Font, "This is teletype_20"),
     lists:foreach(fun(Row) ->
 			  gl:translatef(0.0, -TextH, 0.0),
-			  wx_glfont:render(teletype_20, Row)
+			  wx_glfont:render(Font, Row)
 		  end, File),
     gl:popMatrix(),
     gl:matrixMode(?GL_PROJECTION),

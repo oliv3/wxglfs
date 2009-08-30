@@ -32,9 +32,9 @@ init() ->
     Wx = wx:new(),
     {Frame, GL} = wx:batch(fun() -> create_window(Wx) end),
     wxWindow:show(Frame),
-
+    
     %% fs:start(wx:get_env(), GL),
-    wx_glfont:start(GL),
+    %% wx_glfont:start(GL),
 
     State = #state{frame=Frame, gl=GL},
     loop(State),
@@ -42,10 +42,11 @@ init() ->
 
 
 stop() ->
-    wx_glfont:stop(),
+    %% wx_glfont:stop(),
     %% fs:stop(),
     wx:destroy(),
-    init:stop().
+%%    init:stop(),
+    ok.
 
 
 create_window(Wx) ->
@@ -55,7 +56,8 @@ create_window(Wx) ->
     
     %% wxFrame:setIcon(Frame, wxIcon:new("wxwin.ico")),
     Opts = [{size, {?WIDTH, ?HEIGHT}}],
-    GLAttrib = [{attribList, [?WX_GL_RGBA, ?WX_GL_DOUBLEBUFFER, ?WX_GL_DEPTH_SIZE, 24, 0]}],
+    GLAttrib = [{attribList, [?WX_GL_RGBA, ?WX_GL_DOUBLEBUFFER,
+			      ?WX_GL_DEPTH_SIZE, 24, 0]}],
     GL = wxGLCanvas:new(Frame, Opts ++ GLAttrib),
 
     wxFrame:connect(Frame, enter_window),
