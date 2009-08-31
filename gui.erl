@@ -144,7 +144,7 @@ set_view(State) ->
 
     gl:depthFunc(?GL_LEQUAL),
     gl:enable(?GL_DEPTH_TEST),
-    gl:clearColor(1.0,0.0,0.0,1.0),
+    gl:clearColor(1.0,1.0,1.0,1.0),
     gl:clearDepth(State#state.zmax),
 
     gl:matrixMode(?GL_PROJECTION),

@@ -10,7 +10,7 @@
 -define(ZERO, 0.0).
 -define(ONE,  1.0).
 
--record(state, {enabled=true, gl, rot=0, list, file, font20}).
+-record(state, {enabled=true, gl, rot=0, list, file, font20, font10}).
 
 
 start() ->
@@ -36,11 +36,16 @@ loop0(Env, GL) ->
 
     Font = wxFont:new(20, ?wxFONTFAMILY_SWISS, ?wxFONTSTYLE_NORMAL,
 		      ?wxFONTENCODING_ISO8859_15),
-    {ok, GLFont} = wx_glfont:load_font(Font, [{name, teletype_20}]),
+    {ok, GLFont} = wx_glfont:load_font(Font, []),
+    Fixed = wxFont:new(10, ?wxFONTFAMILY_MODERN, ?wxFONTSTYLE_NORMAL,
+		       ?wxFONTENCODING_ISO8859_15),
+    {ok, GLFixed} = wx_glfont:load_font(Fixed, []),
+
     List = wx_glfont:make_list(GLFont, "Hello world!"),
     {ok, File0} = file:read_file(?MODULE_STRING ++ ".erl"),
     File = re:split(File0, "\r?\n", [{return, list}]),
-    State = #state{gl=GL, list=List, file=File, font20=GLFont},
+    State = #state{gl=GL, list=List, file=File,
+		   font20=GLFont, font10=GLFixed},
     loop(State).
 
 loop(State) ->
@@ -115,7 +120,7 @@ test2(State) ->
 scale({Width, Height}) ->
     gl:scalef(2.0/Width, 1.0/Height, 1.0).
     
-test3(#state{gl=GL, file=File, font20=Font}) ->
+test3(#state{gl=GL, file=File, font10=Font}) ->
     %%gl:color3ub(255, 255, 255),
     gl:color3ub(0, 0, 0),
     {W,H} = wxWindow:getSize(GL),
@@ -128,7 +133,9 @@ test3(#state{gl=GL, file=File, font20=Font}) ->
     gl:loadIdentity(),
     TextH = float(wx_glfont:height(Font)),
     gl:translatef(30.0, H-30.0-TextH, 0.0),
-    wx_glfont:render(Font, "This is teletype_20"),
+    wx_glfont:render(Font, "This is a fixed font in size 10"),
+    gl:translatef(0.0, -TextH, 0.0),
+    wx_glfont:render(Font, "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"),
     lists:foreach(fun(Row) ->
 			  gl:translatef(0.0, -TextH, 0.0),
 			  wx_glfont:render(Font, Row)

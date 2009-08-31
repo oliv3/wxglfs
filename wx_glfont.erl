@@ -89,33 +89,29 @@ gen_glfont(Font, AW, H, Options) ->
 
 make_glyphs(Font,From,To,TW,TH) ->
     MDC = memory_dc(Font),
-    Bitmap = wxBitmap:new(TW, TH),
+    Bitmap = wxBitmap:new(TW, TH, [{depth,32}]),
     ok = wxMemoryDC:selectObject(MDC, Bitmap),
 
     BG = {0, 0, 0, 0},
     Brush = wxBrush:new(BG, [{style, ?wxTRANSPARENT}]),
-    %% wxMemoryDC:clear(MDC),
     wxMemoryDC:setBackground(MDC, Brush),
+    wxMemoryDC:clear(MDC),
 
     FG = {255, 255, 255, 255},
     wxMemoryDC:setTextForeground(MDC, FG),
+    wxMemoryDC:setTextBackground(MDC, BG),
     Glyphs = make_glyphs(MDC, From, To, 0, 0, TW, TH, array:new()),
     Image = wxBitmap:convertToImage(Bitmap),
+    %%debug(Image),  %% Remove the destroy lines below if debug
+
     BinData = wxImage:getData(Image),
     Alpha = case wxImage:hasAlpha(Image) of
-		true -> wxImage:getAlpha(Image);
+		true ->
+		    %%io:format("A = ~p ~n", [wxImage:hasAlpha(Image)]),
+		    wxImage:getAlpha(Image);
 		false ->
-		    case wxImage:hasMask(Image) of
-			true ->
-			    wxImage:initAlpha(Image),
-			    wxImage:getAlpha(Image);
-			false ->
-			    wxImage:setMaskColour(Image, 0,0,0),
-			    wxImage:initAlpha(Image),
-			    wxImage:getAlpha(Image)
-		    end
+		    false
 	    end,
-    %% debug(Image),  %% Remove the lines below if debug
 
     wxBrush:destroy(Brush),
     wxImage:destroy(Image),
@@ -124,9 +120,9 @@ make_glyphs(Font,From,To,TW,TH) ->
     greyscale(BinData, Alpha, Glyphs).
 
 %% Minimize texture space, use greyscale images
-%% greyscale(BinData, false, Glyphs) ->
-%%     Bin = << <<R:8>> || <<R:8,_:8,_:8>> <= BinData>>,
-%%     {Bin, false, Glyphs};
+greyscale(BinData, false, Glyphs) ->  %% Alpha use gray scale value
+    Bin = << <<255:8, A:8>> || <<A:8,_:8,_:8>> <= BinData>>,
+    {Bin, true, Glyphs};
 greyscale(BinData, Alpha, Glyphs) ->
     {greyscale2(BinData, Alpha, <<>>), true, Glyphs}.
 
@@ -157,7 +153,7 @@ make_glyph(DC, Char, X0, Y0,  TW, TH, Acc0) ->
     end,
     wxMemoryDC:drawText(DC, [Char], {X1, Y1}),
     G = #glyph{w=Width, u=X1/TW, v=(Y1)/TH},
-    {array:set(Char, G, Acc0), X+1, Y}.
+    {array:set(Char, G, Acc0), X+2, Y}.
 
 gen_texture(TW,TH,Bin,HaveAlpha,Options) ->
     [TexId] = gl:genTextures(1),
@@ -224,16 +220,23 @@ render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
 	    gl:texCoordPointer(2, ?GL_FLOAT, 16, TxBin),
 	    gl:enableClientState(?GL_VERTEX_ARRAY),
 	    gl:enableClientState(?GL_TEXTURE_COORD_ARRAY),
-	    gl:drawArrays(?GL_QUADS, 0, byte_size(Bin) div 16),
+	    gl:drawArrays(?GL_QUADS, 0, (byte_size(Bin)-65) div 16),
 	    gl:disableClientState(?GL_VERTEX_ARRAY),
-	    gl:disableClientState(?GL_TEXTURE_COORD_ARRAY)
+	    gl:disableClientState(?GL_TEXTURE_COORD_ARRAY),
+	    clean(Bin,TxBin)
     end,
     Size.
     
 render_text3([], _Gs, _IH, _IW, H, {W, Bin}) ->
-    {{W,H},Bin};
+    %% 65 bytes so it's off heap and the binary doesn't move
+    %% if garbage collect.
+    {{W,H},<<Bin/bytes, 0:520>>};
 render_text3([Char|String], Gs, IH, IW, H, Data0) ->
     case array:get(Char, Gs) of
+	#glyph{}=Glyph ->
+	    %%io:format("~s ~p~n",[[Char], Glyph]),
+	    Data = render_glyph(Glyph,H,IW,IH,Data0), 
+	    render_text3(String, Gs, IH, IW, H, Data);
 	undefined when Char =:= 9 -> %% TAB
 	    Space = array:get(32, Gs),
 	    Data = lists:foldl(fun(_, Data) ->
@@ -241,16 +244,12 @@ render_text3([Char|String], Gs, IH, IW, H, Data0) ->
 			       end, Data0, "        "),
 	    render_text3(String, Gs, IH, IW, H, Data);
 	undefined -> %% Should we render something strange here
-	    render_text3(String, Gs, IH, IW, H, Data0);
-	Glyph ->
-	    %%io:format("~s ~p~n",[[Char], Glyph]),
-	    Data = render_glyph(Glyph,H,IW,IH,Data0), 
-	    render_text3(String, Gs, IH, IW, H, Data)
+	    render_text3(String, Gs, IH, IW, H, Data0)
     end.
 
 render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Bin}) -> 
     X1 = X0 + W,
-    UD = U + (W-1)*IW,
+    UD = U + W*IW,
     VD = V + IH,
     {X1,
      <<Bin/binary,         %% wxImage: 0,0 is upper left turn each 
@@ -283,10 +282,10 @@ calc_tex_size(X, Y, No, CW, CH, Prev = {BestArea,Dec}, BestCoord)
     Square = abs(Xp - Yp),
     NextX = ((No-1) div (Y+1)) + 1,
     if Area < BestArea ->
-	    %%io:format("Best is ~p ~p ~p ~n", [Area, Xp,Yp]),
+	    %io:format("Best is ~p ~p ~p ~n", [Area, Xp,Yp]),
 	    calc_tex_size(NextX, Y+1, No, CW, CH, {Area,Square}, {Xp,Yp});
        Area == BestArea, Square < Dec ->
-	    %%io:format("Best is ~p ~p ~p ~n", [Area, Xp,Yp]),
+	    %io:format("Best is ~p ~p ~p ~n", [Area, Xp,Yp]),
 	    calc_tex_size(NextX, Y+1, No, CW, CH, {Area,Square}, {Xp,Yp});
        true ->
 	    calc_tex_size(NextX, Y+1, No, CW, CH, Prev, BestCoord)
@@ -319,6 +318,10 @@ check_pow2(NoX, W, Pow2) when NoX * W > Pow2 ->
 check_pow2(NoX, W, Pow2) ->
     {trunc((Pow2 - NoX*W)/W), Pow2}.
 
+%% Make a call with the binaries so that they don't
+%% get garbage collected until they are not needed.
+clean(Bin,_) ->
+    size(Bin).
 
 debug(Image) ->
     Frame = wxFrame:new(wx:null(), ?wxID_ANY, "DEBUG",
