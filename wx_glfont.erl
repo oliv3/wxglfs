@@ -26,6 +26,10 @@
 -record(font,  {wx, tex, glyphs, height, ih, iw}).
 
 -define(F32, 32/float-native).
+-define(SPACE_X, 3).  % Space between chars
+-define(SPACE_Y, 2).  % Space between rows
+-define(BIN_XTRA, 85). %% Safe off-heap alloc
+
 
 %% TODO trap_exit to free textures on exit
 
@@ -80,7 +84,8 @@ gen_glfont(Font, AW, H, Options) ->
     Ranges0 = proplists:get_value(range, Options, [{32, 256}]),
     {NoChars, Ranges} = char_ranges(Ranges0),
     {TW,TH} = calc_tex_size(NoChars, AW, H),
-    {Bin, HaveAlpha, Glyphs} = make_glyphs(Font,Ranges,H, TW,TH),
+    io:format("Tex Sz: ~p ~p ~n",[TW,TH]),
+    {Bin, HaveAlpha, Glyphs} = make_glyphs(Font,Ranges,H,TW,TH),
     TexId = gen_texture(TW,TH,Bin,HaveAlpha,Options),
     
     #font{wx=Font, tex=TexId, glyphs=Glyphs, height=H, ih=H/TH, iw=1/TW}.
@@ -99,7 +104,7 @@ make_glyphs(Font,Ranges,H, TW,TH) ->
     ok = wxMemoryDC:selectObject(MDC, Bitmap),
 
     BG = {0, 0, 0, 0},
-    Brush = wxBrush:new(BG, [{style, ?wxTRANSPARENT}]),
+    Brush = wxBrush:new(BG, [{style, ?wxSOLID}]),
     wxMemoryDC:setBackground(MDC, Brush),
     wxMemoryDC:clear(MDC),
 
@@ -149,19 +154,25 @@ make_glyphs(_DC, [], _X, _Y, _H, _TW, _TH, Acc) ->
 make_glyph(DC, Char, X0, Y0, Height, TW, TH, Acc0) ->
     {Width, _H} = wxDC:getTextExtent(DC, [Char]),
     Xt = X0+Width,
-    true = (Y0 + Height) =< TH, %% Assert that we fit inside texture
-
-    case Xt > TW of
-	true -> 
-	    X = Width,  Y = Y0+Height+2,
-	    X1 = 0, Y1 = Y;
+    case (Y0 + Height) =< TH of
+	true -> %% Assert that we fit inside texture
+	    case Xt > TW of
+		true -> 
+		    X = Width,  Y = Y0+Height+?SPACE_Y,
+		    X1 = 0, Y1 = Y;
+		false ->
+		    X  = Xt,  Y = Y0,
+		    X1 = X0, Y1 = Y0 
+	    end,
+	    wxMemoryDC:drawText(DC, [Char], {X1, Y1}),
+	    G = #glyph{w=Width, u=X1/TW, v=(Y1)/TH},
+	    {array:set(Char, G, Acc0), X+?SPACE_X, Y};
 	false ->
-	    X  = Xt,  Y = Y0,
-	    X1 = X0, Y1 = Y0 
-    end,
-    wxMemoryDC:drawText(DC, [Char], {X1, Y1}),
-    G = #glyph{w=Width, u=X1/TW, v=(Y1)/TH},
-    {array:set(Char, G, Acc0), X+3, Y}.
+	    io:format("Tex ~p,~p to small Ignore Char ~p(~ts)~n",
+		      [TW,TH,Char,[Char]]),
+	    {Acc0, X0, Y0}
+    end.
+	    
 
 gen_texture(TW,TH,Bin,HaveAlpha,Options) ->
     [TexId] = gl:genTextures(1),
@@ -221,24 +232,26 @@ render_text(Font, String) ->
 render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
     {Size, Bin} = render_text3(String, Gs, IH, IW, H, {0, <<>>}),
     case Bin of
-	<<>> -> ok;	
+	<<_:?BIN_XTRA/bytes>> -> ok;
 	<<_:2/unit:32, TxBin/bytes>> ->
 	    gl:bindTexture(?GL_TEXTURE_2D, TexId),
 	    gl:vertexPointer(2, ?GL_FLOAT, 16, Bin),
 	    gl:texCoordPointer(2, ?GL_FLOAT, 16, TxBin),
 	    gl:enableClientState(?GL_VERTEX_ARRAY),
 	    gl:enableClientState(?GL_TEXTURE_COORD_ARRAY),
-	    gl:drawArrays(?GL_QUADS, 0, (byte_size(Bin)-65) div 16),
+	    gl:drawArrays(?GL_QUADS, 0, (byte_size(Bin)-?BIN_XTRA) div 16),
 	    gl:disableClientState(?GL_VERTEX_ARRAY),
 	    gl:disableClientState(?GL_TEXTURE_COORD_ARRAY),
+	    %% Sync - hmm must fix this in wx
+	    gl:isEnabled(?GL_BLEND),
 	    clean(Bin,TxBin)
     end,
     Size.
     
 render_text3([], _Gs, _IH, _IW, H, {W, Bin}) ->
-    %% 65 bytes so it's off heap and the binary doesn't move
-    %% if garbage collect.
-    {{W,H},<<Bin/bytes, 0:520>>};
+    %% 73 bytes so it's off heap and the binary doesn't move
+    %% if garbage collected.
+    {{W,H},<<Bin/bytes, 0:(?BIN_XTRA*8)>>};
 render_text3([Char|String], Gs, IH, IW, H, Data0) ->
     case array:get(Char, Gs) of
 	#glyph{}=Glyph ->
@@ -280,12 +293,12 @@ render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Bin}) ->
 
 calc_tex_size(No, CW, CH) ->
     %% Add some extra chars to be sure it fits.
-    calc_tex_size(No+10, 1, No+10, CW, CH, {undefined, undefined}, undefined).
+    calc_tex_size(No+45, 1, No+45, CW, CH, {undefined, undefined}, undefined).
 
 calc_tex_size(X, Y, No, CW, CH, Prev = {BestArea,Dec}, BestCoord)
   when Y =< No ->
-    Xp = tsize(X*CW+X*3), %% + Empty space between chars
-    Yp = tsize(Y*CH+Y*2), %% + Empty space between rows
+    Xp = tsize(X*CW+X*?SPACE_X), %% + Empty space between chars
+    Yp = tsize(Y*CH+Y*?SPACE_Y), %% + Empty space between rows
     Area = Xp * Yp,
     Square = abs(Xp - Yp),
     NextX = ((No-1) div (Y+1)) + 1,
@@ -335,7 +348,7 @@ debug(Image0) ->
     Image = wxImage:copy(Image0),
     W = wxImage:getWidth(Image),
     H = wxImage:getHeight(Image),
-    Frame = wxFrame:new(wx:null(), ?wxID_ANY, "DEBUG", [{size, {W, H}}]),
+    Frame = wxFrame:new(wx:null(), ?wxID_ANY, "DEBUG", [{size, {W+10, H+10}}]),
     Panel = wxPanel:new(Frame),
     Paint = fun(_,_) ->	    
 		    DC=wxPaintDC:new(Panel),
