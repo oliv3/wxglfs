@@ -12,6 +12,10 @@
 
 -record(state, {enabled=true, gl, rot=0, list, file, font20, font10}).
 
+-define(CHARS, [{32,256},    %% ISO_latin
+		{1490,1515}, %% Hebrew
+		{26084,26090},{26400,26415}, {35480,35500}]). %% Japanese
+
 
 start() ->
     {Env, GL} = gui:env(),
@@ -35,17 +39,18 @@ loop0(Env, GL) ->
     io:format("GL: ~s ~s~n", [Ven, Ver]),
 
     Font = wxFont:new(20, ?wxFONTFAMILY_SWISS, ?wxFONTSTYLE_NORMAL,
-		      ?wxFONTENCODING_ISO8859_15),
+		      ?wxFONTWEIGHT_NORMAL),
     {ok, GLFont} = wx_glfont:load_font(Font, []),
     Fixed = wxFont:new(10, ?wxFONTFAMILY_MODERN, ?wxFONTSTYLE_NORMAL,
-		       ?wxFONTENCODING_ISO8859_15),
-    {ok, GLFixed} = wx_glfont:load_font(Fixed, []),
+		       ?wxFONTWEIGHT_NORMAL),
+    {ok, GLFixed} = wx_glfont:load_font(Fixed, [{range, ?CHARS}]),
 
     List = wx_glfont:make_list(GLFont, "Hello world!"),
     {ok, File0} = file:read_file(?MODULE_STRING ++ ".erl"),
     File = re:split(File0, "\r?\n", [{return, list}]),
     State = #state{gl=GL, list=List, file=File,
 		   font20=GLFont, font10=GLFixed},
+    wxFrame:connect(GL,    right_up),
     loop(State).
 
 loop(State) ->
@@ -56,6 +61,21 @@ loop(State) ->
 	disabled ->
 	    loop(State#state{enabled=false});
 
+	#wx{event=#wxMouse{type=right_up}} ->
+	    Dlg = wxFontDialog:new(State#state.gl, wxFontData:new()),
+	    New = case wxFontDialog:showModal(Dlg) of
+		      ?wxID_OK ->
+			  Font = wxFontData:getChosenFont(wxFontDialog:getFontData(Dlg)),
+			  FontDesc = wxFont:getNativeFontInfoUserDesc(Font),
+			  io:format("Selected ~s~n",[FontDesc]),
+			  {ok, GLFixed} = wx_glfont:load_font(Font, [{range, ?CHARS}]),
+			  State#state{font10=GLFixed};
+		      _ ->
+			  State
+		  end,
+	    wxFontDialog:destroy(Dlg),
+	    loop(New);
+	
 	{Pid, {Ref, draw}} ->
 	    draw(State),
 	    Pid ! {Ref, ok},
@@ -136,6 +156,10 @@ test3(#state{gl=GL, file=File, font10=Font}) ->
     wx_glfont:render(Font, "This is a fixed font in size 10"),
     gl:translatef(0.0, -TextH, 0.0),
     wx_glfont:render(Font, "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"),
+    gl:translatef(0.0, -TextH, 0.0),
+    wx_glfont:render(Font, [72,101,98,114,101,119,32,32,32,32,1513,1500,1493,1501,32,45,45,32,74,97,112,
+			    97,110,101,115,101,32,40,26085,26412,35486,41,10]),
+    
     lists:foreach(fun(Row) ->
 			  gl:translatef(0.0, -TextH, 0.0),
 			  wx_glfont:render(Font, Row)
@@ -145,4 +169,3 @@ test3(#state{gl=GL, file=File, font10=Font}) ->
     gl:popMatrix(),
     gl:matrixMode(?GL_MODELVIEW).
 
-    

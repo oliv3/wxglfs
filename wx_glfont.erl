@@ -77,17 +77,23 @@ make_list(#font{} = Font, String) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 gen_glfont(Font, AW, H, Options) ->
-    {From, To} = proplists:get_value(range, Options, {32, 256}),
-    NoChars = To - From,
-    {TW,TH} = calc_tex_size(NoChars, AW, H), 
-    From = erlang:min(From, To), %% Assert range    
-    
-    {Bin, HaveAlpha, Glyphs} = make_glyphs(Font,From,To,TW,TH),
+    Ranges0 = proplists:get_value(range, Options, [{32, 256}]),
+    {NoChars, Ranges} = char_ranges(Ranges0),
+    {TW,TH} = calc_tex_size(NoChars, AW, H),
+    {Bin, HaveAlpha, Glyphs} = make_glyphs(Font,Ranges,H, TW,TH),
     TexId = gen_texture(TW,TH,Bin,HaveAlpha,Options),
     
     #font{wx=Font, tex=TexId, glyphs=Glyphs, height=H, ih=H/TH, iw=1/TW}.
 
-make_glyphs(Font,From,To,TW,TH) ->
+char_ranges(Ranges0) when is_list(Ranges0) ->
+    Ranges = lists:sort(Ranges0),
+    Count = lists:foldl(fun({From, To}, Count) when From =< To ->
+				Count + (To - From)
+			end, 0, Ranges),
+    {Count, Ranges}.
+    
+
+make_glyphs(Font,Ranges,H, TW,TH) ->
     MDC = memory_dc(Font),
     Bitmap = wxBitmap:new(TW, TH, [{depth,32}]),
     ok = wxMemoryDC:selectObject(MDC, Bitmap),
@@ -100,9 +106,9 @@ make_glyphs(Font,From,To,TW,TH) ->
     FG = {255, 255, 255, 255},
     wxMemoryDC:setTextForeground(MDC, FG),
     wxMemoryDC:setTextBackground(MDC, BG),
-    Glyphs = make_glyphs(MDC, From, To, 0, 0, TW, TH, array:new()),
+    Glyphs = make_glyphs(MDC, Ranges, 0, 0, H, TW, TH, array:new()),
     Image = wxBitmap:convertToImage(Bitmap),
-    %%debug(Image),  %% Remove the destroy lines below if debug
+    %% debug(Image),  
 
     BinData = wxImage:getData(Image),
     Alpha = case wxImage:hasAlpha(Image) of
@@ -131,29 +137,31 @@ greyscale2(<<R:8,_:8,_:8, Cs/bytes>>, <<A:8, As/bytes>>, Acc) ->
 greyscale2(<<>>, <<>>, Acc) ->
     Acc.
 
-make_glyphs(DC, From, To, X, Y, TW, TH, Acc0)
+make_glyphs(DC, [{From, To}|Ranges], X, Y, H, TW, TH, Acc0)
   when From < To ->
-    {Acc,Xp,Yp} = make_glyph(DC, From, X, Y, TW, TH, Acc0),
-    make_glyphs(DC, From+1, To, Xp, Yp, TW, TH, Acc);
-make_glyphs(_DC, _From, _To, _X, _Y, _TW, _TH, Acc) ->
+    {Acc,Xp,Yp} = make_glyph(DC, From, X, Y, H, TW, TH, Acc0),
+    make_glyphs(DC, [{From+1, To}|Ranges], Xp, Yp, H, TW, TH, Acc);
+make_glyphs(DC, [_|Ranges], X, Y, H, TW, TH, Acc) ->
+    make_glyphs(DC, Ranges, X, Y, H, TW, TH, Acc);
+make_glyphs(_DC, [], _X, _Y, _H, _TW, _TH, Acc) ->
     Acc.
 
-make_glyph(DC, Char, X0, Y0,  TW, TH, Acc0) ->
-    {Width, Height} = wxDC:getTextExtent(DC, [Char]),
+make_glyph(DC, Char, X0, Y0, Height, TW, TH, Acc0) ->
+    {Width, _H} = wxDC:getTextExtent(DC, [Char]),
     Xt = X0+Width,
     true = (Y0 + Height) =< TH, %% Assert that we fit inside texture
 
     case Xt > TW of
 	true -> 
-	    X = Width,  Y = Y0+Height,
+	    X = Width,  Y = Y0+Height+2,
 	    X1 = 0, Y1 = Y;
 	false ->
-	    X = Xt,  Y = Y0,
-	    X1 = X0, Y1 = Y0	     
+	    X  = Xt,  Y = Y0,
+	    X1 = X0, Y1 = Y0 
     end,
     wxMemoryDC:drawText(DC, [Char], {X1, Y1}),
     G = #glyph{w=Width, u=X1/TW, v=(Y1)/TH},
-    {array:set(Char, G, Acc0), X+2, Y}.
+    {array:set(Char, G, Acc0), X+3, Y}.
 
 gen_texture(TW,TH,Bin,HaveAlpha,Options) ->
     [TexId] = gl:genTextures(1),
@@ -234,7 +242,6 @@ render_text3([], _Gs, _IH, _IW, H, {W, Bin}) ->
 render_text3([Char|String], Gs, IH, IW, H, Data0) ->
     case array:get(Char, Gs) of
 	#glyph{}=Glyph ->
-	    %%io:format("~s ~p~n",[[Char], Glyph]),
 	    Data = render_glyph(Glyph,H,IW,IH,Data0), 
 	    render_text3(String, Gs, IH, IW, H, Data);
 	undefined when Char =:= 9 -> %% TAB
@@ -260,6 +267,7 @@ render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Bin}) ->
       >>
     }.
 
+%% The code above is the same as the code below.
 %% render_glyph(#glyph{u=U,v=V,w=W},X0,H,IW,IH) -> 
 %%     X1 = X0 + W,
 %%     UD = U + (W-1)*IW,
@@ -272,12 +280,12 @@ render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Bin}) ->
 
 calc_tex_size(No, CW, CH) ->
     %% Add some extra chars to be sure it fits.
-    calc_tex_size(No+5, 1, No+5, CW, CH, {undefined, undefined}, undefined).
+    calc_tex_size(No+10, 1, No+10, CW, CH, {undefined, undefined}, undefined).
 
 calc_tex_size(X, Y, No, CW, CH, Prev = {BestArea,Dec}, BestCoord)
   when Y =< No ->
-    Xp = tsize(X*CW),
-    Yp = tsize(Y*CH),
+    Xp = tsize(X*CW+X*3), %% + Empty space between chars
+    Yp = tsize(Y*CH+Y*2), %% + Empty space between rows
     Area = Xp * Yp,
     Square = abs(Xp - Yp),
     NextX = ((No-1) div (Y+1)) + 1,
@@ -323,9 +331,11 @@ check_pow2(NoX, W, Pow2) ->
 clean(Bin,_) ->
     size(Bin).
 
-debug(Image) ->
-    Frame = wxFrame:new(wx:null(), ?wxID_ANY, "DEBUG",
-			[{size, {600, 600}}]),
+debug(Image0) ->
+    Image = wxImage:copy(Image0),
+    W = wxImage:getWidth(Image),
+    H = wxImage:getHeight(Image),
+    Frame = wxFrame:new(wx:null(), ?wxID_ANY, "DEBUG", [{size, {W, H}}]),
     Panel = wxPanel:new(Frame),
     Paint = fun(_,_) ->	    
 		    DC=wxPaintDC:new(Panel),

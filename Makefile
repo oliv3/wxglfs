@@ -1,6 +1,6 @@
 all: erlang
 
-erlang: gui.beam cube.beam u.beam hello.beam wxGLFontServer.beam
+erlang: gui.beam cube.beam u.beam hello.beam wx_glfont.beam wxGLFontServer.beam
 
 %.beam: %.erl
 	@erlc $<
