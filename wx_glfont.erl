@@ -234,6 +234,7 @@ render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
     case Bin of
 	<<_:?BIN_XTRA/bytes>> -> ok;
 	<<_:2/unit:32, TxBin/bytes>> ->
+	    wx:retain_memory(Bin),
 	    gl:bindTexture(?GL_TEXTURE_2D, TexId),
 	    gl:vertexPointer(2, ?GL_FLOAT, 16, Bin),
 	    gl:texCoordPointer(2, ?GL_FLOAT, 16, TxBin),
@@ -242,9 +243,7 @@ render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
 	    gl:drawArrays(?GL_QUADS, 0, (byte_size(Bin)-?BIN_XTRA) div 16),
 	    gl:disableClientState(?GL_VERTEX_ARRAY),
 	    gl:disableClientState(?GL_TEXTURE_COORD_ARRAY),
-	    %% Sync - hmm must fix this in wx
-	    gl:isEnabled(?GL_BLEND),
-	    clean(Bin,TxBin)
+	    wx:release_memory(Bin)
     end,
     Size.
     
