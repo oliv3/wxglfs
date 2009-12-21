@@ -157,8 +157,11 @@ test3(#state{gl=GL, file=File, font10=Font}) ->
     gl:translatef(0.0, -TextH, 0.0),
     wx_glfont:render(Font, "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"),
     gl:translatef(0.0, -TextH, 0.0),
-    wx_glfont:render(Font, [72,101,98,114,101,119,32,32,32,32,1513,1500,1493,1501,32,45,45,32,74,97,112,
-			    97,110,101,115,101,32,40,26085,26412,35486,41,10]),
+    wx_glfont:render(Font, [72,101,98,114,101,119,32,32,32,32,
+			    [1513,1500,1493,1501],
+			    32,45,45,32,74,97,112,
+			    <<97:8,110:8,101:8,115:8,101:8,32:8,40:8>>,
+			    [26085,26412,35486],41,10]),
 
     gl:translatef(0.0, -5*TextH, 0.0),
     wx_glfont:render(Font, File),

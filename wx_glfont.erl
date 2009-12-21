@@ -1,10 +1,22 @@
 %%%-------------------------------------------------------------------
-%%% File    : wxGLFontServer.erl
-%%% Author  : Olivier <olivier@biniou.info>
+%%% File    : wx_glfont.erl
+%%% Author  : Olivier <olivier@biniou.info> 
+%%%           Dan Gudmundsson <dgud@erlang.org>
 %%% Description : OpenGL text rendering using wxFont
 %%%
 %%% Created : 27 Aug 2009 by Olivier <olivier@biniou.info>
 %%%-------------------------------------------------------------------
+%%%
+%%% @doc A api for generating textures and rendering strings via opengl.
+%%%
+%%% The 'load_font' functions loads and generates a texture from an
+%%% #wxFont{}. The textures are white on black with an alpha channel.
+%%% The default mode for the texture created is ?GL_MODULATE.
+%%% That way you can use gl:color3x to specify the color of the text.
+%%% 
+%%% This is a low level interface a library the intention is that 
+%%% you should be able to use it to build a text rendering interface
+%%% above that changes fonts and colors and maybe even sizes.
 
 -module(wx_glfont).
 
@@ -41,7 +53,7 @@ load_font(WxFont) ->
 
 %% @spec(::wxFont(), [Options]) -> font_info() | {error, Reason}
 %% Option = {range, [{CS1,CE1},...]} | 
-%%              {tex_mode,?GL_MODE} | 
+%%              {tex_mode,GL_MODE} | 
 %%              {tex_min, MinFilter} | {tex_mag, MagFilter}
 %%              {tex_wrap_s, WrapS}  | {tex_wrap_s, WrapS}
 %%              {tex_gen_mipmap, ?GL_TRUE|?GL_FALSE}
@@ -94,15 +106,16 @@ render_to_list(#font{} = Font, String) ->
 %% @spec(Font::font_info(), unicode:charlist()) -> 
 %%       {W::integer(), H::integer(), binary()}.
 %% @desc Renders the string to an interleaved vertex array.
-%% @equiv render_to_binary(Font, String, {{0,0},<<>>}).
+%% @equiv render_to_binary(Font, String, {0,0,<<>>}).
 render_to_binary(#font{glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
     render_text3(String, Gs, IH, IW, H, {0,0, <<>>}).
 
-%% @spec(Font::font_info(), unicode:charlist(), {W,H,Bin}) -> 
-%%       {W::integer(), H::integer(), binary()}.
+%% @spec(Font::font_info(), unicode:charlist(), {X0,Y0,Bin}) -> 
+%%       {X::integer(), Y::integer(), Bin::binary()}.
 %% @desc Renders the string to an interleaved vertex array.
-%% The render starts at position W and H and appends to Bin.
-%% 
+%% The render starts at position X0 and Y0 and appends to Bin,
+%% and returns the next position.
+%%
 %% The binary can be rendered by the following code:
 %%
 %%     gl:bindTexture(?GL_TEXTURE_2D, wx_glfont:tex_id(Font)),</br>
@@ -112,8 +125,9 @@ render_to_binary(#font{glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
 %%     gl:enableClientState(?GL_TEXTURE_COORD_ARRAY),</br>
 %%     gl:drawArrays(?GL_QUADS, 0, (byte_size(Bin)-?BIN_XTRA) div 16),</br>
 render_to_binary(#font{glyphs=Gs, height=H, ih=IH, iw=IW}, 
-		 String, {{H,W},Bin}) ->
-    render_text3(String, Gs, IH, IW, H, {W,H,Bin}).
+		 String, Data = {W,H,D}) 
+  when is_integer(W), is_integer(H), is_binary(D) ->
+    render_text3(String, Gs, IH, IW, H, Data).
 
 %%--------------------------------------------------------------------
 %%% Internal functions
@@ -268,7 +282,7 @@ render_text(Font, String) ->
     ok.
 
 render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
-    {Size, Bin} = render_text3(String, Gs, IH, IW, H, {0,0, <<>>}),
+    {RX,RY,Bin} = render_text3(String, Gs, IH, IW, H, {0,0, <<>>}),
     case Bin of
 	<<_:?BIN_XTRA/bytes>> -> ok;
 	<<_:2/unit:32, TxBin/bytes>> ->
@@ -283,10 +297,8 @@ render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
 	    gl:disableClientState(?GL_TEXTURE_COORD_ARRAY),
 	    wx:release_memory(Bin)
     end,
-    Size.
-    
-render_text3([], _Gs, _IH, _IW, H, {W,H0,Bin}) ->
-    {{W,H+H0},<<Bin/bytes, 0:(?BIN_XTRA*8)>>};
+    {RX,abs(RY-H)}.
+
 render_text3([Char|String], Gs, IH, IW, H, Data0) when is_integer(Char) ->
     case array:get(Char, Gs) of
 	#glyph{}=Glyph ->
@@ -308,8 +320,9 @@ render_text3([Other|String], Gs, IH, IW, H, Data0) ->
     Data = render_text3(Other, Gs, IH, IW, H, Data0),
     render_text3(String, Gs, IH, IW, H, Data);
 render_text3(Bin, Gs, IH, IW, H, Data) when is_binary(Bin) ->
-    render_text3(unicode:characters_to_list(Bin), Gs, IH, IW, H, Data).
-
+    render_text3(unicode:characters_to_list(Bin), Gs, IH, IW, H, Data);
+render_text3([], _Gs, _IH, _IW, _H, {W,H0,Bin}) ->
+    {W, H0, <<Bin/bytes, 0:(?BIN_XTRA*8)>>}.
 
 render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Y0,Bin}) -> 
     X1 = X0 + W,
