@@ -45,12 +45,12 @@ loop0(Env, GL) ->
 		       ?wxFONTWEIGHT_NORMAL),
     {ok, GLFixed} = wx_glfont:load_font(Fixed, [{range, ?CHARS}]),
 
-    List = wx_glfont:make_list(GLFont, "Hello world!"),
+    List = wx_glfont:render_to_list(GLFont, "Hello world!"),
     {ok, File0} = file:read_file(?MODULE_STRING ++ ".erl"),
-    File = re:split(File0, "\r?\n", [{return, list}]),
-    State = #state{gl=GL, list=List, file=File,
+    %% File = re:split(File0, "\r?\n", [{return, list}]),
+    State = #state{gl=GL, list=List, file=binary_to_list(File0),
 		   font20=GLFont, font10=GLFixed},
-    wxFrame:connect(GL,    right_up),
+    wxFrame:connect(GL, right_up),
     loop(State).
 
 loop(State) ->
@@ -159,11 +159,9 @@ test3(#state{gl=GL, file=File, font10=Font}) ->
     gl:translatef(0.0, -TextH, 0.0),
     wx_glfont:render(Font, [72,101,98,114,101,119,32,32,32,32,1513,1500,1493,1501,32,45,45,32,74,97,112,
 			    97,110,101,115,101,32,40,26085,26412,35486,41,10]),
-    
-    lists:foreach(fun(Row) ->
-			  gl:translatef(0.0, -TextH, 0.0),
-			  wx_glfont:render(Font, Row)
-		  end, File),
+
+    gl:translatef(0.0, -5*TextH, 0.0),
+    wx_glfont:render(Font, File),
     gl:popMatrix(),
     gl:matrixMode(?GL_PROJECTION),
     gl:popMatrix(),

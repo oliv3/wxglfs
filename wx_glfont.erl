@@ -6,16 +6,13 @@
 %%% Created : 27 Aug 2009 by Olivier <olivier@biniou.info>
 %%%-------------------------------------------------------------------
 
-%%
-%%   I want wx_name for erlang based tools in wx
-%%   and have wxName for real wxWidgets classes only.
-%%   i.e to avoid future name clashes with real wxWidgets classes.
-%%
 -module(wx_glfont).
 
 %% API
 -export([load_font/1, load_font/2,
-	 text_size/2, height/1, render/2, make_list/2]).
+	 text_size/2, height/1, tex_id/1,
+	 render/2, render_to_list/2, 
+	 render_to_binary/2, render_to_binary/3]).
 
 -compile(export_all).
 
@@ -28,22 +25,30 @@
 -define(F32, 32/float-native).
 -define(SPACE_X, 3).  % Space between chars
 -define(SPACE_Y, 2).  % Space between rows
--define(BIN_XTRA, 85). %% Safe off-heap alloc
+-define(BIN_XTRA, 0). %% Safe off-heap alloc
 
-
-%% TODO trap_exit to free textures on exit
 
 %%====================================================================
 %% API
 %%====================================================================
-%%--------------------------------------------------------------------
-%% Function: start_link() -> {ok,Pid} | ignore | {error,Error}
-%% Description: Starts the server
-%%--------------------------------------------------------------------
 
+%-type font_info() :: opaque().
+
+%% @spec(::wxFont()) -> font_info() | {error, Reason}
+%% @equiv(load_font(WxFont, [])
 load_font(WxFont) ->
     load_font(WxFont, []).
 
+%% @spec(::wxFont(), [Options]) -> font_info() | {error, Reason}
+%% Option = {range, [{CS1,CE1},...]} | 
+%%              {tex_mode,?GL_MODE} | 
+%%              {tex_min, MinFilter} | {tex_mag, MagFilter}
+%%              {tex_wrap_s, WrapS}  | {tex_wrap_s, WrapS}
+%%              {tex_gen_mipmap, ?GL_TRUE|?GL_FALSE}
+%% @desc Prepare a font to be used in a wxGLCANVAS.
+%% Renders each character in the range into a texture.
+%% Range is a list of unicode code points ranges to be used when 
+%% rendering, default [{32, 256}].
 load_font(WxFont, Options) ->
     case wxFont:ok(WxFont) of
 	true ->
@@ -54,28 +59,61 @@ load_font(WxFont, Options) ->
 	    {error, not_ok}
     end.
 
+%% @spec(font_info()) -> {integer(), integer()}.
+%% @desc Returns the size of a string (in scale 1.0).
 text_size(#font{wx=Font}, String) ->
     MDC  = memory_dc(Font),
     Size = wxDC:getTextExtent(MDC, String),
     wxMemoryDC:destroy(MDC),
     Size.
 
+%% @spec(font_info()) -> {integer(), integer()}.
+%% @desc Returns the height of characters and rows.
 height(#font{height=Height}) ->
     Height.
 
-%% format(GLFont, Format, Args) ->
-%%     gen_server:call(?SERVER, {format, GLFont, Format, Args}).
+%% @spec(font_info()) -> integer()
+%% @desc Returns the texture id.
+tex_id(#font{tex=TexId}) ->
+    TexId.
 
-%% Remove the ones below, keep above
+%% @spec(font_info(), unicode:charlist()) -> ok.
+%% @desc Directly renders the string.
 render(#font{} = GLFont, String) ->
     render_text(GLFont, String).
 
-make_list(#font{} = Font, String) ->
+%% @spec(font_info(), unicode:charlist()) -> {Size::size(), DisplayList::integer()}.
+%% @desc Renders the string.
+render_to_list(#font{} = Font, String) ->
     List = gl:genLists(1),
     gl:newList(List, ?GL_COMPILE),
     Res = render_text2(Font, String),
     gl:endList(),
     {Res, List}.    
+
+%% @spec(Font::font_info(), unicode:charlist()) -> 
+%%       {W::integer(), H::integer(), binary()}.
+%% @desc Renders the string to an interleaved vertex array.
+%% @equiv render_to_binary(Font, String, {{0,0},<<>>}).
+render_to_binary(#font{glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
+    render_text3(String, Gs, IH, IW, H, {0,0, <<>>}).
+
+%% @spec(Font::font_info(), unicode:charlist(), {W,H,Bin}) -> 
+%%       {W::integer(), H::integer(), binary()}.
+%% @desc Renders the string to an interleaved vertex array.
+%% The render starts at position W and H and appends to Bin.
+%% 
+%% The binary can be rendered by the following code:
+%%
+%%     gl:bindTexture(?GL_TEXTURE_2D, wx_glfont:tex_id(Font)),</br>
+%%     gl:vertexPointer(2, ?GL_FLOAT, 16, Bin), </br>
+%%     gl:texCoordPointer(2, ?GL_FLOAT, 16, TxBin),</br>
+%%     gl:enableClientState(?GL_VERTEX_ARRAY),</br>
+%%     gl:enableClientState(?GL_TEXTURE_COORD_ARRAY),</br>
+%%     gl:drawArrays(?GL_QUADS, 0, (byte_size(Bin)-?BIN_XTRA) div 16),</br>
+render_to_binary(#font{glyphs=Gs, height=H, ih=IH, iw=IW}, 
+		 String, {{H,W},Bin}) ->
+    render_text3(String, Gs, IH, IW, H, {W,H,Bin}).
 
 %%--------------------------------------------------------------------
 %%% Internal functions
@@ -84,7 +122,7 @@ gen_glfont(Font, AW, H, Options) ->
     Ranges0 = proplists:get_value(range, Options, [{32, 256}]),
     {NoChars, Ranges} = char_ranges(Ranges0),
     {TW,TH} = calc_tex_size(NoChars, AW, H),
-    io:format("Tex Sz: ~p ~p ~n",[TW,TH]),
+    %% io:format("Tex Sz: ~p ~p ~n",[TW,TH]),
     {Bin, HaveAlpha, Glyphs} = make_glyphs(Font,Ranges,H,TW,TH),
     TexId = gen_texture(TW,TH,Bin,HaveAlpha,Options),
     
@@ -230,7 +268,7 @@ render_text(Font, String) ->
     ok.
 
 render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
-    {Size, Bin} = render_text3(String, Gs, IH, IW, H, {0, <<>>}),
+    {Size, Bin} = render_text3(String, Gs, IH, IW, H, {0,0, <<>>}),
     case Bin of
 	<<_:?BIN_XTRA/bytes>> -> ok;
 	<<_:2/unit:32, TxBin/bytes>> ->
@@ -247,36 +285,44 @@ render_text2(#font{tex=TexId, glyphs=Gs, height=H, ih=IH, iw=IW}, String) ->
     end,
     Size.
     
-render_text3([], _Gs, _IH, _IW, H, {W, Bin}) ->
-    %% 73 bytes so it's off heap and the binary doesn't move
-    %% if garbage collected.
-    {{W,H},<<Bin/bytes, 0:(?BIN_XTRA*8)>>};
-render_text3([Char|String], Gs, IH, IW, H, Data0) ->
+render_text3([], _Gs, _IH, _IW, H, {W,H0,Bin}) ->
+    {{W,H+H0},<<Bin/bytes, 0:(?BIN_XTRA*8)>>};
+render_text3([Char|String], Gs, IH, IW, H, Data0) when is_integer(Char) ->
     case array:get(Char, Gs) of
 	#glyph{}=Glyph ->
 	    Data = render_glyph(Glyph,H,IW,IH,Data0), 
 	    render_text3(String, Gs, IH, IW, H, Data);
+	undefined when Char =:= 10 -> %% NL
+	    {_,H0,Bin} = Data0,
+	    render_text3(String, Gs, IH, IW, H, {0, H0-H, Bin});
 	undefined when Char =:= 9 -> %% TAB
 	    Space = array:get(32, Gs),
-	    Data = lists:foldl(fun(_, Data) ->
-				       render_glyph(Space,H,IW,IH,Data)
-			       end, Data0, "        "),
+	    Data  = lists:foldl(fun(_, Data) ->
+					render_glyph(Space,H,IW,IH,Data)
+				end, Data0, "        "),
 	    render_text3(String, Gs, IH, IW, H, Data);
 	undefined -> %% Should we render something strange here
 	    render_text3(String, Gs, IH, IW, H, Data0)
-    end.
+    end;
+render_text3([Other|String], Gs, IH, IW, H, Data0) ->
+    Data = render_text3(Other, Gs, IH, IW, H, Data0),
+    render_text3(String, Gs, IH, IW, H, Data);
+render_text3(Bin, Gs, IH, IW, H, Data) when is_binary(Bin) ->
+    render_text3(unicode:characters_to_list(Bin), Gs, IH, IW, H, Data).
 
-render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Bin}) -> 
+
+render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Y0,Bin}) -> 
     X1 = X0 + W,
     UD = U + W*IW,
     VD = V + IH,
-    {X1,
+    YH = Y0+H,
+    {X1,Y0,
      <<Bin/binary,         %% wxImage: 0,0 is upper left turn each 
-      X0:?F32,0:?F32, U:?F32, VD:?F32, % Vertex lower left, UV-coord up-left
-      X1:?F32,0:?F32, UD:?F32,VD:?F32, % Vertex lower right,UV-coord up-right
-      X1:?F32,H:?F32, UD:?F32, V:?F32, % Vertex upper right,UV-coord down-right
-      X0:?F32,H:?F32, U:?F32,  V:?F32  % Vertex upper left, UV-coord down-left
-      >>
+       X0:?F32,Y0:?F32, U:?F32, VD:?F32, % Vertex lower left, UV-coord up-left
+       X1:?F32,Y0:?F32, UD:?F32,VD:?F32, % Vertex lower right,UV-coord up-right
+       X1:?F32,YH:?F32, UD:?F32, V:?F32, % Vertex upper right,UV-coord down-right
+       X0:?F32,YH:?F32, U:?F32,  V:?F32  % Vertex upper left, UV-coord down-left
+     >>
     }.
 
 %% The code above is the same as the code below.
@@ -289,6 +335,8 @@ render_glyph(#glyph{u=U,v=V,w=W},H,IW,IH, {X0,Bin}) ->
 %%     gl:texCoord2f(UD, V), gl:vertex2i(X1, H),
 %%     gl:texCoord2f(U,  V), gl:vertex2i(X0, H),
 %%     X1.
+
+%% Calculate texture size
 
 calc_tex_size(No, CW, CH) ->
     %% Add some extra chars to be sure it fits.
@@ -331,17 +379,11 @@ tsize(X0) ->
   
 log2(X) ->
     math:log(X) / math:log(2).
-    
 
 check_pow2(NoX, W, Pow2) when NoX * W > Pow2 ->
     check_pow2(NoX, W, Pow2*2);
 check_pow2(NoX, W, Pow2) ->
     {trunc((Pow2 - NoX*W)/W), Pow2}.
-
-%% Make a call with the binaries so that they don't
-%% get garbage collected until they are not needed.
-clean(Bin,_) ->
-    size(Bin).
 
 debug(Image0) ->
     Image = wxImage:copy(Image0),
